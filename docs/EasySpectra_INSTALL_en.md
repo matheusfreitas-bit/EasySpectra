@@ -17,7 +17,7 @@ This document describes how to install and run EasySpectra on a clean system.
 
 ---
 
-## Installation
+## 📦 Installation
 
 🐍 Step 1 — Install Python
 
@@ -105,7 +105,7 @@ On macOS, you may also use:
 ./EasySpectra.command
 ```
 
-🧪 Troubleshooting
+## 🧪 Troubleshooting
 
 Problem: ModuleNotFoundError
 
