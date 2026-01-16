@@ -52,14 +52,20 @@ powershell
 Copy code
 python -m venv .venv
 .venv\Scripts\activate
+```
+
 3️⃣ Upgrade pip
-bash
+```bash
 Copy code
 pip install --upgrade pip
+```
+
 4️⃣ Install dependencies
-bash
+```bash
 Copy code
 pip install -r requirements.txt
+```
+
 ⚠️ Important note about PyTorch:
 This project uses torch. If you have issues installing it or want GPU support, please follow the official instructions at:
 https://pytorch.org/get-started/locally/
@@ -67,19 +73,25 @@ https://pytorch.org/get-started/locally/
 ▶️ Running EasySpectra
 To launch the graphical interface, run:
 
-bash
+```bash
 Copy code
 python launcher.py
+```
+
 Alternatively, you can run the main module directly (advanced use):
 
-bash
+```bash
 Copy code
 python -m easyspectra
+```
+
 On macOS, you may also use:
 
-bash
+```bash
 Copy code
 ./EasySpectra.command
+```
+
 🧭 Typical Workflow
 A typical workflow in EasySpectra consists of:
 
@@ -98,7 +110,7 @@ Compute vegetation indices (e.g., NDVI, GNDVI)
 Export results to CSV for further statistical analysis
 
 📁 Project Structure
-text
+```text
 Copy code
 EasySpectra/
  ├── src/easyspectra/      # Main source code
@@ -109,6 +121,8 @@ EasySpectra/
  ├── requirements.txt     # Python dependencies
  ├── pyproject.toml       # Project configuration
  └── README.md
+```
+
 📊 Dataset Example
 Some examples and figures were generated using the WeedCube dataset:
 
