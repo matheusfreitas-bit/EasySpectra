@@ -47,16 +47,14 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 Windows (PowerShell):
-
 powershell
-Copy code
+```Copy code
 python -m venv .venv
 .venv\Scripts\activate
 ```
 
 3️⃣ Upgrade pip
-```bash
-Copy code
+```Copy code
 pip install --upgrade pip
 ```
 
