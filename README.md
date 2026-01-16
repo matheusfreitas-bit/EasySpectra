@@ -87,25 +87,25 @@ On macOS, you may also use:
 ```
 
 🧭 Typical Workflow
-A typical workflow in EasySpectra consists of:
 
-Import multispectral or hyperspectral image data
+1. A typical workflow in EasySpectra consists of:
 
-Align spectral bands and apply geometric correction
+2. Import multispectral or hyperspectral image data
 
-Perform radiometric calibration using reference panels
+3. Align spectral bands and apply geometric correction
 
-Define regions of interest (ROI) interactively
+4. Perform radiometric calibration using reference panels
 
-Extract spectral signatures
+5. Define regions of interest (ROI) interactively
 
-Compute vegetation indices (e.g., NDVI, GNDVI)
+6. Extract spectral signatures
 
-Export results to CSV for further statistical analysis
+7. Compute vegetation indices (e.g., NDVI, GNDVI)
+
+8. Export results to CSV for further statistical analysis
 
 📁 Project Structure
 ```text
-Copy code
 EasySpectra/
  ├── src/easyspectra/      # Main source code
  ├── deep_models/         # Deep learning models (e.g., SuperGlue)
