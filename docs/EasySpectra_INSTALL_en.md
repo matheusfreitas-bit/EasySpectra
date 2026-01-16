@@ -1,135 +1,137 @@
-# EasySpectra – Installation Guide
+# Installing EasySpectra
 
-This document explains how to install and run **EasySpectra** on a local machine
-for research and commercial use.
+This document describes how to install and run EasySpectra on a clean system.
 
 ---
 
-## 1. System requirements
+## 🖥️ System Requirements
 
+- Python **>= 3.10** (recommended: Python 3.11)
 - Operating system:
-  - Windows 10 or later
-  - macOS 12 or later
-- Python:
-  - Python 3.10 or newer (3.11 recommended)
-- Hardware:
-  - At least 8 GB RAM (16 GB recommended)
-  - Enough disk space for hyperspectral cubes and orthomosaics
+  - macOS
+  - Linux
+  - Windows
+
+- **Docker** (required for orthomosaic generation):
+  - https://www.docker.com/get-started
 
 ---
 
-## 2. Project structure
+## 🐍 Step 1 — Install Python
 
-Your project folder should be named:
-EasySpectra_EN/
+Download and install Python from:
 
-and contain at least:
-EasySpectra_EN/
- ├─ src/
- │   └─ easyspectra/
- │       ├─ __init__.py
- │       ├─ interface.py
- │       ├─ funcoes_importacao.py
- │       ├─ preprocessamento.py
- │       ├─ analise_espectral.py
- │       ├─ normalizacao.py
- │       ├─ metodos_alinhamento.py
- │       ├─ models/
- │       │   ├─ __init__.py
- │       │   ├─ matching.py
- │       │   ├─ superpoint.py
- │       │   ├─ superglue.py
- │       │   ├─ metodos_superglue.py
- │       │   └─ ...
- │       └─ ...
- ├─ docs/
- │   └─ INSTALL_en.md
- ├─ requirements.txt
- └─ README.md
+```
+https://www.python.org/downloads/
+```
 
----
+Make sure Python is available in the terminal:
 
-## 3. Creating and activating a virtual environment
+```Copy code
+python --version
+```
+or
+```Copy code
+python3 --version
+```
+📥 Step 2 — Clone the EasySpectra repository
 
-Open a terminal and go to the project root:
-cd EasySpectra_EN
+```Copy code
+git clone https://github.com/matheusfreitas-bit/EasySpectra.git
+cd EasySpectra
+```
 
-3.1. Create the virtual environment:
-- macOS/Linux:
-  python3 -m venv .venv
-- Windows:
-  python -m venv .venv
+🧪 Step 3 — Create and activate a virtual environment
+macOS / Linux
 
-3.2. Activate the virtual environment:
-- macOS/Linux:
-  source .venv/bin/activate
-- Windows:
-  .venv\Scripts\activate
+```Copy code
+python3 -m venv .venv
+source .venv/bin/activate
+Windows (PowerShell)
+```
 
-When active, your terminal will show (.venv).
+```Copy code
+python -m venv .venv
+.venv\Scripts\activate
+```
 
----
+⬆️ Step 4 — Upgrade pip
 
-## 4. Installing dependencies
-
-Dependencies are listed in:
-requirements.txt
-
-With the environment active, install them:
+```Copy code
 pip install --upgrade pip
+📦 Step 5 — Install Python dependencies
+```
+
+```Copy code
 pip install -r requirements.txt
+```
 
-Typical dependencies:
-numpy, matplotlib, scikit-image, opencv-python, rasterio, torch,
-Pillow, tifffile, tkinter.
+>⚠️ Important note about PyTorch:
+>This project uses torch. If you want GPU support or encounter installation issues, please follow the official instructions at:
+>https://pytorch.org/get-started/locally/
 
-Some packages (like rasterio) may require GDAL or system libraries.
+🐳 Step 6 — Install and configure Docker (for orthomosaic)
+EasySpectra uses OpenDroneMap (ODM) via Docker to generate orthomosaics.
 
----
+Install Docker:
+```
+https://www.docker.com/get-started
+```
+Check Docker installation:
 
-## 5. Running EasySpectra
+```Copy code
+docker --version
+```
 
-The application is in:
-src/easyspectra
+Download the ODM image:
 
-Run the graphical interface:
-cd EasySpectra_EN/src
-python -m easyspectra.interface
+```Copy code
+docker pull opendronemap/odm
+```
 
----
+>⚠️ Without Docker and ODM, the orthomosaic (GeoImport) step will not run.
 
-## 6. Quick installation checklist
+▶️ Step 7 — Run EasySpectra
+From the project root directory:
 
-1. Download or clone EasySpectra_EN.
-2. Open terminal → cd EasySpectra_EN
-3. Create and activate environment:
-   python -m venv .venv
-   source .venv/bin/activate  (macOS/Linux)
-   .venv\Scripts\activate   (Windows)
-4. Install dependencies:
-   pip install -r requirements.txt
-5. Go to src:
-   cd src
-6. Run:
-   python -m easyspectra.interface
+```Copy code
+python launcher.py
+```
+On macOS, you may also use:
 
----
+```Copy code
+./EasySpectra.command
+```
 
-## 7. Troubleshooting
+🧪 Troubleshooting
 
-7.1. ModuleNotFoundError: No module named 'easyspectra'
-- Ensure you are running inside src:
-  cd EasySpectra_EN/src
-  python -m easyspectra.interface
-- Check that easyspectra/ contains __init__.py.
+Problem: ModuleNotFoundError
 
-7.2. Problems installing rasterio, GDAL, OpenCV:
-- macOS: brew install gdal
-- Linux: use apt, yum, or dnf
-- Windows: consider Anaconda or precompiled wheels
+>Make sure:
+>The virtual environment is activated
 
-7.3. Tkinter not found:
-- Windows: reinstall Python with Tcl/Tk
-- Linux: sudo apt install python3-tk
+>You installed dependencies with:
 
-If issues persist, provide OS, Python version, and the full error message.
+```Copy code
+pip install -r requirements.txt
+```
+
+Problem: Docker not found
+
+>Check:
+```Copy code
+docker --version
+```
+
+>If not found, install Docker from:
+
+```
+https://www.docker.com/get-started
+```
+
+Problem: Permission denied on macOS for Docker
+>Make sure Docker Desktop is running before launching EasySpectra.
+
+✅ Installation Complete
+You are now ready to use EasySpectra.
+
