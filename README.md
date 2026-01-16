@@ -92,6 +92,8 @@ docker pull opendronemap/odm
 
 >⚠️ Without Docker and ODM, the orthomosaic (GeoImport) step will not run.
 
+---
+
 ▶️ Running EasySpectra
 To launch the graphical interface, run:
 
@@ -110,6 +112,7 @@ On macOS, you may also use:
 ```Copy code
 ./EasySpectra.command
 ```
+---
 
 🧭 Typical Workflow
 
@@ -129,6 +132,8 @@ On macOS, you may also use:
 
 8. Export results to CSV for further statistical analysis
 
+---
+
 📁 Project Structure
 ```text
 EasySpectra/
@@ -142,6 +147,8 @@ EasySpectra/
  └── README.md
 ```
 
+---
+
 📊 Dataset Example
 Some examples and figures were generated using the WeedCube dataset:
 
@@ -150,8 +157,12 @@ WeedCube: Proximal hyperspectral image dataset of crops and weeds for machine le
 Data in Brief, 56, 110837.
 https://doi.org/10.1016/j.dib.2024.110837
 
+---
+
 🧠 Scientific Motivation
 EasySpectra was developed to reduce technical barriers in spectral image analysis by integrating the entire workflow into a single, accessible platform, allowing researchers to focus on experimental design, interpretation, and decision-making rather than on complex data preprocessing steps.
+
+---
 
 🔮 Future Developments
 Planned features include:
@@ -164,13 +175,19 @@ Tools for large-scale field experiments
 
 Additional vegetation indices and spectral tools
 
+---
+
 📜 License
 This project is currently distributed under proprietary terms.
 A specific open-source license may be added in the future.
 
+---
+
 🤝 Contributing
 Contributions, suggestions, and bug reports are welcome.
 Please use the GitHub Issues page to report problems or request features.
+
+---
 
 📬 Contact
 If you use EasySpectra in your research, please cite the software and feel free to contact the author.
