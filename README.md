@@ -26,6 +26,9 @@
   - Linux
   - Windows
 
+ - **Docker** (required for orthomosaic generation):
+  - https://www.docker.com/get-started
+
 ---
 
 ## 📦 Installation
