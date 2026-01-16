@@ -34,7 +34,7 @@ It is **strongly recommended** to use a Python virtual environment.
 
 ### 1️⃣ Clone the repository
 
-bash
+```bash
 git clone https://github.com/matheusfreitas-bit/EasySpectra.git
 cd EasySpectra
 
