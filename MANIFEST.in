@@ -1,0 +1,5 @@
+include README.md
+include docs/INSTALL_en.md
+
+recursive-include src/easyspectra *.py
+recursive-include src/easyspectra/models *.py

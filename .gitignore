@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+*.spec
+
+# PyInstaller / app
+*.app
+*.dmg
+*.pkg
+
+# Mac
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Large libs
+**/site-packages/
+
