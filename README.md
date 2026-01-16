@@ -36,7 +36,7 @@ It is **strongly recommended** to use a Python virtual environment.
 
 ```bash
 git clone https://github.com/matheusfreitas-bit/EasySpectra.git
-cd EasySpectra
+cd EasySpectra```
 
 2️⃣ Create and activate a virtual environment
 macOS / Linux:
