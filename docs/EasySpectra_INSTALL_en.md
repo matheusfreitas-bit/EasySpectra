@@ -17,7 +17,9 @@ This document describes how to install and run EasySpectra on a clean system.
 
 ---
 
-## 🐍 Step 1 — Install Python
+## Installation
+
+🐍 Step 1 — Install Python
 
 Download and install Python from:
 
