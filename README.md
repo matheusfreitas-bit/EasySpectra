@@ -67,6 +67,28 @@ pip install -r requirements.txt
 This project uses torch. If you have issues installing it or want GPU support, please follow the official instructions at:
 https://pytorch.org/get-started/locally/
 
+🐳 Docker / OpenDroneMap Setup (Required for Orthomosaic)
+
+EasySpectra uses OpenDroneMap (ODM) via Docker to generate orthomosaics.
+
+1️⃣ Install Docker:
+
+https://www.docker.com/get-started
+
+2️⃣ Check that Docker is working:
+
+```Copy code
+docker --version
+```
+
+3️⃣ Download the ODM image:
+
+```Copy code
+docker pull opendronemap/odm
+```
+
+⚠️ Without Docker and ODM, the orthomosaic (GeoImport) step will not run.
+
 ▶️ Running EasySpectra
 To launch the graphical interface, run:
 
