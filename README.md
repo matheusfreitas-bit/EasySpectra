@@ -47,7 +47,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 Windows (PowerShell):
-powershell
+
 ```Copy code
 python -m venv .venv
 .venv\Scripts\activate
@@ -59,8 +59,7 @@ pip install --upgrade pip
 ```
 
 4️⃣ Install dependencies
-```bash
-Copy code
+```Copy code
 pip install -r requirements.txt
 ```
 
@@ -71,22 +70,19 @@ https://pytorch.org/get-started/locally/
 ▶️ Running EasySpectra
 To launch the graphical interface, run:
 
-```bash
-Copy code
+```Copy code
 python launcher.py
 ```
 
 Alternatively, you can run the main module directly (advanced use):
 
-```bash
-Copy code
+```Copy code
 python -m easyspectra
 ```
 
 On macOS, you may also use:
 
-```bash
-Copy code
+```Copy code
 ./EasySpectra.command
 ```
 
