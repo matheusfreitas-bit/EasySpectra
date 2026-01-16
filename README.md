@@ -42,10 +42,10 @@ cd EasySpectra
 2️⃣ Create and activate a virtual environment
 macOS / Linux:
 
-```bash
-Copy code
+```Copy code
 python3 -m venv .venv
 source .venv/bin/activate
+```
 Windows (PowerShell):
 
 powershell
