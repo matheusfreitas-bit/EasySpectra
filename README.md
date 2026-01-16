@@ -35,7 +35,7 @@
 
 It is **strongly recommended** to use a Python virtual environment.
 
-### 1️⃣ Clone the repository
+1️⃣ Clone the repository
 
 ```bash
 git clone https://github.com/matheusfreitas-bit/EasySpectra.git
@@ -92,9 +92,17 @@ docker pull opendronemap/odm
 
 >⚠️ Without Docker and ODM, the orthomosaic (GeoImport) step will not run.
 
+>📊 Dataset Example
+>Some examples and figures were generated using the WeedCube dataset:
+
+>Ram, B. G., Mettler, J., Howatt, K., Ostlie, M., & Sun, X. (2024).
+>WeedCube: Proximal hyperspectral image dataset of crops and weeds for machine learning applications.
+>Data in Brief, 56, 110837.
+>https://doi.org/10.1016/j.dib.2024.110837
+
 ---
 
-▶️ Running EasySpectra
+## ▶️ Running EasySpectra
 To launch the graphical interface, run:
 
 ```Copy code
@@ -114,7 +122,7 @@ On macOS, you may also use:
 ```
 ---
 
-🧭 Typical Workflow
+## 🧭 Typical Workflow
 
 1. A typical workflow in EasySpectra consists of:
 
@@ -134,7 +142,7 @@ On macOS, you may also use:
 
 ---
 
-📁 Project Structure
+## 📁 Project Structure
 ```text
 EasySpectra/
  ├── src/easyspectra/      # Main source code
@@ -149,22 +157,12 @@ EasySpectra/
 
 ---
 
-📊 Dataset Example
-Some examples and figures were generated using the WeedCube dataset:
-
-Ram, B. G., Mettler, J., Howatt, K., Ostlie, M., & Sun, X. (2024).
-WeedCube: Proximal hyperspectral image dataset of crops and weeds for machine learning applications.
-Data in Brief, 56, 110837.
-https://doi.org/10.1016/j.dib.2024.110837
-
----
-
-🧠 Scientific Motivation
+## 🧠 Scientific Motivation
 EasySpectra was developed to reduce technical barriers in spectral image analysis by integrating the entire workflow into a single, accessible platform, allowing researchers to focus on experimental design, interpretation, and decision-making rather than on complex data preprocessing steps.
 
 ---
 
-🔮 Future Developments
+## 🔮 Future Developments
 Planned features include:
 
 Integration of machine learning classifiers
@@ -177,17 +175,17 @@ Additional vegetation indices and spectral tools
 
 ---
 
-📜 License
+## 📜 License
 This project is currently distributed under proprietary terms.
 A specific open-source license may be added in the future.
 
 ---
 
-🤝 Contributing
+## 🤝 Contributing
 Contributions, suggestions, and bug reports are welcome.
 Please use the GitHub Issues page to report problems or request features.
 
 ---
 
-📬 Contact
+## 📬 Contact
 If you use EasySpectra in your research, please cite the software and feel free to contact the author.
