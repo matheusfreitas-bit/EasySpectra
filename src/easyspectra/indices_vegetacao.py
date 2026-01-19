@@ -19,13 +19,14 @@ import matplotlib
 matplotlib.use("TkAgg")
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, Toplevel, Listbox
+from tkinter import ttk, filedialog, messagebox, simpledialog, Toplevel, Listbox
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import RectangleSelector, EllipseSelector, PolygonSelector
 from matplotlib.path import Path
 import os
 import json
+from .dataset_manager import save_dataset_rows
 
 
 # ---------------------------------------------------------------------
@@ -40,6 +41,9 @@ indice_nome_atual = None    # currently selected index name
 indice_imagem_atual = None  # full index image (H, W)
 indice_zoomada = None       # zoomed index subimage (h, w)
 indice_area_valores = None  # 1D array (Npix,) of values from selected area
+indice_zoom_bounds = None   # (ymin, ymax, xmin, xmax) on the full image
+vi_area_vals_dict = None    # dict: index_name -> 1D array (Npix,)
+vi_area_indices = None      # list of index names used to build vi_area_vals_dict
 
 _seletores_ativos_vi = []   # keep selectors alive (avoid garbage collection)
 
@@ -56,6 +60,324 @@ def _limpar_seletores_vi():
     finally:
         _seletores_ativos_vi = []
 
+
+def _vi_available_indices():
+    base = {"NDVI", "GNDVI", "NDRE"}
+    try:
+        base |= set(indices_dict.keys())
+    except Exception:
+        pass
+    return sorted(base)
+
+
+def _vi_compute_standard_if_missing(name: str):
+    if name in indices_dict:
+        return
+    if not _garantir_cubo_carregado():
+        return
+    data = cube_vi.astype(float)
+    EPS = 1e-12
+    red_idx = _closest_band_idx(660.0)
+    nir_idx = _closest_band_idx(800.0)
+    green_idx = _closest_band_idx(560.0)
+    red_edge_idx = _closest_band_idx(705.0)
+    R = data[:, :, red_idx]
+    NIR = data[:, :, nir_idx]
+    G = data[:, :, green_idx]
+    RE = data[:, :, red_edge_idx]
+    if name == "NDVI":
+        indices_dict[name] = (NIR - R) / (NIR + R + EPS)
+    elif name == "GNDVI":
+        indices_dict[name] = (NIR - G) / (NIR + G + EPS)
+    elif name == "NDRE":
+        indices_dict[name] = (NIR - RE) / (NIR + RE + EPS)
+
+
+def _vi_ask_indices_to_extract():
+    names = _vi_available_indices()
+    if not names:
+        messagebox.showerror("Error", "No vegetation indices are available.")
+        return None
+
+    win = Toplevel()
+    win.title("Choose indices")
+    win.geometry("360x420")
+    win.grab_set()
+
+    tk.Label(win, text="Select the indices to extract from the ROI:").pack(pady=8)
+
+    frm = tk.Frame(win)
+    frm.pack(fill="both", expand=True, padx=10, pady=6)
+
+    sb = tk.Scrollbar(frm)
+    sb.pack(side="right", fill="y")
+
+    lb = Listbox(frm, selectmode=tk.MULTIPLE, yscrollcommand=sb.set, height=18)
+    for n in names:
+        lb.insert(tk.END, n)
+    lb.pack(side="left", fill="both", expand=True)
+    sb.config(command=lb.yview)
+
+    for i in range(len(names)):
+        lb.selection_set(i)
+
+    result = {"val": None}
+
+    def _ok():
+        sel = [names[i] for i in lb.curselection()]
+        result["val"] = sel if sel else None
+        win.destroy()
+
+    def _cancel():
+        result["val"] = None
+        win.destroy()
+
+    btns = tk.Frame(win)
+    btns.pack(pady=10)
+    tk.Button(btns, text="Continue", command=_ok).pack(side="left", padx=8)
+    tk.Button(btns, text="Cancel", command=_cancel).pack(side="left", padx=8)
+
+    win.wait_window()
+    return result["val"]
+
+
+def _vi_store_roi(mask_2d, fig_to_close=None):
+    global indice_area_valores, vi_area_vals_dict, vi_area_indices
+
+    if indice_zoom_bounds is None:
+        messagebox.showerror("Error", "Zoom region is not defined.")
+        return
+
+    chosen_names = _vi_ask_indices_to_extract()
+    if not chosen_names:
+        return
+
+    ymin, ymax, xmin, xmax = indice_zoom_bounds
+    vals_dict = {}
+
+    for name in chosen_names:
+        _vi_compute_standard_if_missing(name)
+        arr = indices_dict.get(name)
+        if arr is None:
+            continue
+        sub = arr[ymin:ymax, xmin:xmax]
+        if sub.size == 0:
+            continue
+        vals = sub[mask_2d]
+        vals_dict[name] = np.asarray(vals).reshape(-1)
+
+    if not vals_dict:
+        messagebox.showerror("Error", "No values were extracted for the selected indices.")
+        return
+
+    vi_area_vals_dict = vals_dict
+    vi_area_indices = list(vals_dict.keys())
+
+    if indice_nome_atual in vals_dict:
+        indice_area_valores = vals_dict[indice_nome_atual]
+    else:
+        first = next(iter(vals_dict.keys()))
+        indice_area_valores = vals_dict[first]
+
+    n_pix = len(indice_area_valores)
+    messagebox.showinfo(
+        "ROI extracted",
+        f"ROI extracted for {len(vals_dict)} indices. Pixels: {n_pix}.",
+    )
+
+    if fig_to_close is not None:
+        try:
+            fig_to_close.close()
+        except Exception:
+            try:
+                plt.close(fig_to_close)
+            except Exception:
+                pass
+
+
+
+def _vi_dataset_ask_export_type():
+    win = Toplevel()
+    win.title("Dataset export type")
+    win.geometry("360x220")
+    win.grab_set()
+
+    tk.Label(win, text="What do you want to export?").pack(pady=10)
+    choice = tk.StringVar(value="mean")
+
+    tk.Radiobutton(win, text="Only mean value", variable=choice, value="mean").pack(anchor="w", padx=18)
+    tk.Radiobutton(win, text="Individual pixels", variable=choice, value="individual").pack(anchor="w", padx=18)
+
+    result = {"val": None}
+
+    def _ok():
+        result["val"] = choice.get()
+        win.destroy()
+
+    def _cancel():
+        result["val"] = None
+        win.destroy()
+
+    btns = tk.Frame(win)
+    btns.pack(pady=14)
+    tk.Button(btns, text="Continue", command=_ok).pack(side="left", padx=8)
+    tk.Button(btns, text="Cancel", command=_cancel).pack(side="left", padx=8)
+
+    win.wait_window()
+    return result["val"]
+
+
+def _vi_dataset_ask_pixel_mode():
+    win = Toplevel()
+    win.title("Pixel export mode")
+    win.geometry("380x260")
+    win.grab_set()
+
+    tk.Label(win, text="How do you want to export the pixels?").pack(pady=10)
+    mode = tk.StringVar(value="all")
+
+    tk.Radiobutton(win, text="All pixels", variable=mode, value="all").pack(anchor="w", padx=18)
+    tk.Radiobutton(win, text="Random sampling", variable=mode, value="sample").pack(anchor="w", padx=18)
+
+    n_var = tk.StringVar(value="1000")
+    frm = tk.Frame(win)
+    frm.pack(anchor="w", padx=18, pady=10)
+    tk.Label(frm, text="If sampling, number of pixels:").pack(side="left")
+    tk.Entry(frm, textvariable=n_var, width=8).pack(side="left", padx=8)
+
+    result = {"mode": None, "n": None}
+
+    def _ok():
+        m = mode.get()
+        if m == "sample":
+            try:
+                n = int(n_var.get())
+                if n <= 0:
+                    raise ValueError
+            except Exception:
+                messagebox.showerror("Error", "Please enter a valid positive integer.")
+                return
+            result["mode"] = "sample"
+            result["n"] = n
+        else:
+            result["mode"] = "all"
+            result["n"] = None
+        win.destroy()
+
+    def _cancel():
+        win.destroy()
+
+    btns = tk.Frame(win)
+    btns.pack(pady=14)
+    tk.Button(btns, text="Continue", command=_ok).pack(side="left", padx=8)
+    tk.Button(btns, text="Cancel", command=_cancel).pack(side="left", padx=8)
+
+    win.wait_window()
+    return result["mode"], result["n"]
+
+
+def _vi_dataset_build_header(index_names):
+    cols = []
+    for n in (index_names or []):
+        nn = (n or "index").strip() or "index"
+        cols.append(nn)
+    if not cols:
+        cols = [(indice_nome_atual or "index").strip() or "index"]
+    cols.append("label")
+    return cols
+
+
+def _vi_dataset_rows_from_matrix(values_matrix, label):
+    mat = np.asarray(values_matrix)
+    if mat.ndim == 1:
+        mat = mat.reshape(-1, 1)
+    rows = []
+    for i in range(mat.shape[0]):
+        row = [float(v) for v in mat[i, :]]
+        row.append(label)
+        rows.append(row)
+    return rows
+
+
+def _vi_dataset_export(mode: str):
+    global indice_area_valores, indice_nome_atual, vi_area_vals_dict, vi_area_indices
+
+    if vi_area_vals_dict is None:
+        if indice_area_valores is None:
+            messagebox.showerror("Error", "No ROI values available. Use 'Zoom + select ROI' first.")
+            return
+        vi_area_vals_dict = {indice_nome_atual or "index": np.asarray(indice_area_valores).reshape(-1)}
+        vi_area_indices = list(vi_area_vals_dict.keys())
+
+    label = simpledialog.askstring("Label", "Enter class/label name:")
+    if not label:
+        return
+    label = label.strip()
+
+    export_type = _vi_dataset_ask_export_type()
+    if export_type is None:
+        return
+
+    index_names = list(vi_area_vals_dict.keys())
+    values_list = [np.asarray(vi_area_vals_dict[n]).reshape(-1) for n in index_names]
+    n_pix = int(values_list[0].size)
+    for v in values_list[1:]:
+        if int(v.size) != n_pix:
+            messagebox.showerror("Error", "ROI values length mismatch between indices.")
+            return
+    mat = np.column_stack(values_list)  # (Npix, K)
+    warning_msg = None
+
+    if export_type == "mean":
+        chosen = mat.mean(axis=0).reshape(1, -1)
+        saved_n = 1
+    else:
+        pixel_mode, n_req = _vi_dataset_ask_pixel_mode()
+        if pixel_mode is None:
+            return
+
+        if pixel_mode == "all":
+            chosen = mat
+            saved_n = n_pix
+        else:
+            if n_pix <= n_req:
+                chosen = mat
+                saved_n = n_pix
+                warning_msg = f"ROI has only {n_pix} pixels. All were saved."
+            else:
+                idx = np.random.choice(n_pix, size=n_req, replace=False)
+                chosen = mat[idx, :]
+                saved_n = chosen.shape[0]
+
+    if mode == "create":
+        csv_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
+    else:
+        csv_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
+
+    if not csv_path:
+        return
+
+    header = _vi_dataset_build_header(index_names)
+    rows = _vi_dataset_rows_from_matrix(chosen, label)
+
+    try:
+        save_dataset_rows(csv_path, header, rows, mode)
+    except Exception as e:
+        messagebox.showerror("Dataset error", f"{type(e).__name__}: {e}")
+        return
+
+    if warning_msg:
+        messagebox.showwarning("Sampling notice", warning_msg)
+
+    messagebox.showinfo("Dataset saved", f"Saved {saved_n} observation(s).")
+
+
+def criar_dataset_indice_gui():
+    _vi_dataset_export("create")
+
+
+def adicionar_dataset_indice_gui():
+    _vi_dataset_export("append")
 
 # ---------------------------------------------------------------------
 # CORE HELPERS
@@ -465,23 +787,11 @@ def on_select_area_indice_retangulo(ecanto, fcanto):
         return
 
     indice_area_valores = sub.reshape(-1)
-    n = indice_area_valores.size
-
     fig = ecanto.inaxes.figure if ecanto.inaxes is not None else None
 
-    resp = messagebox.askyesno(
-        "Save index area data?",
-        f"{n} pixels were selected on index '{indice_nome_atual}'.\n\n"
-        "Do you want to export these values to CSV now?",
-    )
-    if resp:
-        exportar_indice_area_csv()
-
-    if fig is not None:
-        try:
-            fig.close()
-        except Exception:
-            plt.close(fig)
+    mask = np.zeros(indice_zoomada.shape, dtype=bool)
+    mask[ymin:ymax, xmin:xmax] = True
+    _vi_store_roi(mask, fig)
 
 
 def _ativar_seletor_elipse_indice(ax_zoom_img):
@@ -524,20 +834,7 @@ def _ativar_seletor_elipse_indice(ax_zoom_img):
             return
 
         indice_area_valores = sel
-        n = indice_area_valores.size
-
-        resp = messagebox.askyesno(
-            "Save index area data?",
-            f"{n} pixels were selected on index '{indice_nome_atual}'.\n\n"
-            "Do you want to export these values to CSV now?",
-        )
-        if resp:
-            exportar_indice_area_csv()
-
-        try:
-            fig.close()
-        except Exception:
-            plt.close(fig)
+        _vi_store_roi(mask, fig)
 
     sel = EllipseSelector(
         ax_zoom_img,
@@ -580,20 +877,7 @@ def _ativar_seletor_poligono_indice(ax_zoom_img):
             return
 
         indice_area_valores = sel
-        n = indice_area_valores.size
-
-        resp = messagebox.askyesno(
-            "Save index area data?",
-            f"{n} pixels were selected on index '{indice_nome_atual}'.\n\n"
-            "Do you want to export these values to CSV now?",
-        )
-        if resp:
-            exportar_indice_area_csv()
-
-        try:
-            fig.close()
-        except Exception:
-            plt.close(fig)
+        _vi_store_roi(mask, fig)
 
     # PolygonSelector relies on Line2D → use color instead of face/edgecolor
     sel = PolygonSelector(
@@ -611,7 +895,7 @@ def on_select_zoom_indice(ecanto, fcanto):
     After zooming, the user chooses the selection tool (rectangle, ellipse, or polygon)
     to extract values from a specific area within the zoomed index.
     """
-    global indice_imagem_atual, indice_zoomada, indice_area_valores
+    global indice_imagem_atual, indice_zoomada, indice_area_valores, indice_zoom_bounds, vi_area_vals_dict, vi_area_indices
 
     if indice_imagem_atual is None:
         print("[EasySpectra] Warning: no index image set for zoom.")
@@ -625,6 +909,8 @@ def on_select_zoom_indice(ecanto, fcanto):
 
     xmin, xmax = sorted([x1, x2])
     ymin, ymax = sorted([y1, y2])
+
+    indice_zoom_bounds = (ymin, ymax, xmin, xmax)
 
     sub = indice_imagem_atual[ymin:ymax, xmin:xmax]
     if sub.size == 0:
@@ -648,6 +934,8 @@ def on_select_zoom_indice(ecanto, fcanto):
     # Select area selection mode after zoom
     modo = _escolher_modo_selecao_indice()
     indice_area_valores = None
+    vi_area_vals_dict = None
+    vi_area_indices = None
 
     _limpar_seletores_vi()
     if modo == "ret":
@@ -867,6 +1155,21 @@ def criar_aba_indices_vegetacao(aba):
         font=("Arial", 11),
     ).pack(anchor="w", pady=2)
 
+    tk.Button(
+        btn_frame2,
+        text="🧱 Create dataset (labeled CSV)",
+        command=criar_dataset_indice_gui,
+        font=("Arial", 11),
+    ).pack(anchor="w", pady=2)
+
+    tk.Button(
+        btn_frame2,
+        text="➕ Append to existing dataset",
+        command=adicionar_dataset_indice_gui,
+        font=("Arial", 11),
+    ).pack(anchor="w", pady=2)
+
+
     # --- Custom index calculator ---
     tk.Label(
         frame,
@@ -992,7 +1295,6 @@ def criar_aba_indices_vegetacao(aba):
     # Initial status and index list
     _atualizar_status()
     _atualizar_lista_indices()
-
 
 
 

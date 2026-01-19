@@ -51,6 +51,177 @@ def _limpar_seletores():
         _seletores_ativos = []
 
 
+
+from .dataset_manager import save_dataset_rows
+
+def _dataset_ask_export_type():
+    win = Toplevel()
+    win.title("Dataset export type")
+    win.geometry("360x220")
+    win.grab_set()
+
+    tk.Label(win, text="What do you want to export?").pack(pady=10)
+    choice = tk.StringVar(value="mean")
+
+    tk.Radiobutton(win, text="Only mean spectrum", variable=choice, value="mean").pack(anchor="w", padx=18)
+    tk.Radiobutton(win, text="Individual pixels", variable=choice, value="individual").pack(anchor="w", padx=18)
+
+    result = {"val": None}
+
+    def _ok():
+        result["val"] = choice.get()
+        win.destroy()
+
+    def _cancel():
+        result["val"] = None
+        win.destroy()
+
+    btns = tk.Frame(win)
+    btns.pack(pady=14)
+    tk.Button(btns, text="Continue", command=_ok).pack(side="left", padx=8)
+    tk.Button(btns, text="Cancel", command=_cancel).pack(side="left", padx=8)
+
+    win.wait_window()
+    return result["val"]
+
+
+def _dataset_ask_pixel_mode():
+    win = Toplevel()
+    win.title("Pixel export mode")
+    win.geometry("380x260")
+    win.grab_set()
+
+    tk.Label(win, text="How do you want to export the pixels?").pack(pady=10)
+    mode = tk.StringVar(value="all")
+
+    tk.Radiobutton(win, text="All pixels", variable=mode, value="all").pack(anchor="w", padx=18)
+    tk.Radiobutton(win, text="Random sampling", variable=mode, value="sample").pack(anchor="w", padx=18)
+
+    n_var = tk.StringVar(value="1000")
+    frm = tk.Frame(win)
+    frm.pack(anchor="w", padx=18, pady=10)
+    tk.Label(frm, text="If sampling, number of pixels:").pack(side="left")
+    tk.Entry(frm, textvariable=n_var, width=8).pack(side="left", padx=8)
+
+    result = {"mode": None, "n": None}
+
+    def _ok():
+        m = mode.get()
+        if m == "sample":
+            try:
+                n = int(n_var.get())
+                if n <= 0:
+                    raise ValueError
+            except Exception:
+                messagebox.showerror("Error", "Please enter a valid positive integer.")
+                return
+            result["mode"] = "sample"
+            result["n"] = n
+        else:
+            result["mode"] = "all"
+            result["n"] = None
+        win.destroy()
+
+    def _cancel():
+        win.destroy()
+
+    btns = tk.Frame(win)
+    btns.pack(pady=14)
+    tk.Button(btns, text="Continue", command=_ok).pack(side="left", padx=8)
+    tk.Button(btns, text="Cancel", command=_cancel).pack(side="left", padx=8)
+
+    win.wait_window()
+    return result["mode"], result["n"]
+
+
+def _dataset_build_header():
+    cols = [f"{float(wl):.1f}nm" for wl in wavelengths]
+    cols.append("label")
+    return cols
+
+
+def _dataset_rows_from_spectra(spectra, label):
+    rows = []
+    for i in range(spectra.shape[0]):
+        row = [float(v) for v in spectra[i, :]]
+        row.append(label)
+        rows.append(row)
+    return rows
+
+
+def _dataset_export(mode: str):
+    global area_espectros_2d
+
+    if area_espectros_2d is None:
+        messagebox.showerror("Error", "No area spectra available. Perform area analysis first.")
+        return
+
+    label = simpledialog.askstring("Label", "Enter class/label name:")
+    if not label:
+        return
+    label = label.strip()
+
+    export_type = _dataset_ask_export_type()
+    if export_type is None:
+        return
+
+    spectra = area_espectros_2d
+
+    warning_msg = None
+
+    if export_type == "mean":
+        chosen = spectra.mean(axis=0).reshape(1, -1)
+        saved_n = 1
+    else:
+        pixel_mode, n_req = _dataset_ask_pixel_mode()
+        if pixel_mode is None:
+            return
+
+        n_pix = spectra.shape[0]
+
+        if pixel_mode == "all":
+            chosen = spectra
+            saved_n = n_pix
+        else:
+            if n_pix <= n_req:
+                chosen = spectra
+                saved_n = n_pix
+                warning_msg = f"ROI has only {n_pix} pixels. All were saved."
+            else:
+                idx = np.random.choice(n_pix, size=n_req, replace=False)
+                chosen = spectra[idx, :]
+                saved_n = chosen.shape[0]
+
+    if mode == "create":
+        csv_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
+    else:
+        csv_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
+
+    if not csv_path:
+        return
+
+    header = _dataset_build_header()
+    rows = _dataset_rows_from_spectra(chosen, label)
+
+    try:
+        save_dataset_rows(csv_path, header, rows, mode)
+    except Exception as e:
+        messagebox.showerror("Dataset error", f"{type(e).__name__}: {e}")
+        return
+
+    if warning_msg:
+        messagebox.showwarning("Sampling notice", warning_msg)
+
+    messagebox.showinfo("Dataset saved", f"Saved {saved_n} observation(s).")
+
+
+def criar_dataset_espectral_gui():
+    _dataset_export("create")
+
+
+def adicionar_dataset_espectral_gui():
+    _dataset_export("append")
+
 # --- SELECT RGB BANDS ---
 def selecionar_bandas_rgb(force=False):
     """
@@ -688,3 +859,17 @@ def criar_aba_analise_espectral(aba):
 
 
 
+
+    tk.Button(
+        frame,
+        text="🧱 Create dataset (labeled CSV)",
+        command=criar_dataset_espectral_gui,
+        font=("Arial", 12),
+    ).pack(anchor="w", pady=5)
+
+    tk.Button(
+        frame,
+        text="➕ Append to existing dataset",
+        command=adicionar_dataset_espectral_gui,
+        font=("Arial", 12),
+    ).pack(anchor="w", pady=5)
