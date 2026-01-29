@@ -24,16 +24,285 @@ import cv2
 import rasterio
 from rasterio.warp import reproject, Resampling
 
+# tifffile gives access to EXIF/GPS/XMP blocks that rasterio often doesn't expose
+import tifffile
+import xml.etree.ElementTree as ET
+
 # =============== Rasterio warnings for non-georeferenced images ===============
 import warnings
 from rasterio.errors import NotGeoreferencedWarning
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
-# ========================================================================
+
+# =============================================================================
+# Auto band metadata inference (module-level)
+#
+# This block enables vendor-agnostic wavelength detection without user input.
+# It is intentionally defined at module scope so geoimport_wizard_gui can always
+# call infer_nm_map_from_groups(...).
+# =============================================================================
+
+_WL_KEYS = (
+    "WAVELENGTH",
+    "wavelength",
+    "CENTER_WAVELENGTH",
+    "center_wavelength",
+    "CENTRAL_WAVELENGTH",
+    "central_wavelength",
+    "CentralWavelength",
+    "Xmp.Camera.CentralWavelength",
+    "BandName",
+    "BANDNAME",
+    "BAND_NAME",
+    "band_name",
+    "Xmp.Camera.BandName",
+    "DESCRIPTION",
+    "description",
+)
+
+_SPECTRAL_NAMES = [
+    (450, "Blue"),
+    (475, "Blue"),
+    (550, "Green"),
+    (560, "Green"),
+    (650, "Red"),
+    (660, "Red"),
+    (668, "Red"),
+    (715, "RedEdge"),
+    (717, "RedEdge"),
+    (730, "RedEdge"),
+    (735, "RedEdge"),
+    (790, "NIR"),
+    (840, "NIR"),
+    (842, "NIR"),
+    (860, "NIR"),
+    (1100, "SWIR"),
+]
 
 
-# -------------------------
-# UI utilities / alerts
-# -------------------------
+def _parse_first_float(text):
+    if text is None:
+        return None
+    s = str(text)
+    m = re.search(r"(-?\d+(?:\.\d+)?)", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except Exception:
+        return None
+
+
+def _infer_name_from_nm(nm, tol=25.0):
+    if nm is None:
+        return None
+    best = None
+    best_d = 1e18
+    for ref_nm, name in _SPECTRAL_NAMES:
+        d = abs(float(nm) - float(ref_nm))
+        if d < best_d:
+            best = name
+            best_d = d
+    return best if best_d <= float(tol) else None
+
+
+def _read_sidecar_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    except Exception:
+        return None
+
+
+def _extract_nm_from_sidecar(tif_path):
+    """Try sidecar files (.dat/.xmp/.xml/.json/.txt) to infer wavelength (nm)."""
+    base, _ = os.path.splitext(tif_path)
+    candidates = [
+        base + ".dat",
+        base + ".xmp",
+        base + ".xml",
+        base + ".json",
+        base + ".txt",
+    ]
+
+    for p in candidates:
+        if not os.path.exists(p):
+            continue
+
+        # .dat via existing parser (if present)
+        if p.endswith(".dat") and "_parse_dat_file" in globals():
+            try:
+                d = _parse_dat_file(p)
+                nm = d.get("band_nm")
+                if nm:
+                    return float(nm)
+            except Exception:
+                pass
+
+        # JSON recursive search
+        if p.endswith(".json"):
+            try:
+                obj = json.loads(_read_sidecar_text(p) or "")
+                stack = [obj]
+                while stack:
+                    cur = stack.pop()
+                    if isinstance(cur, dict):
+                        for k, v in cur.items():
+                            if str(k) in _WL_KEYS:
+                                nm = _parse_first_float(v)
+                                if nm:
+                                    return nm
+                            stack.append(v)
+                    elif isinstance(cur, list):
+                        stack.extend(cur)
+            except Exception:
+                pass
+
+        txt = _read_sidecar_text(p)
+        if not txt:
+            continue
+
+        # quick text scan around known keys
+        for key in _WL_KEYS:
+            if key in txt:
+                idx = txt.find(key)
+                snippet = txt[max(0, idx - 80) : idx + 220]
+                nm = _parse_first_float(snippet)
+                if nm and 300 <= nm <= 2500:
+                    return nm
+
+        # generic number scan (last resort)
+        nm = _parse_first_float(txt)
+        if nm and 300 <= nm <= 2500:
+            return nm
+
+    return None
+
+
+def _extract_nm_from_tif_metadata(tif_path):
+    """Try to extract wavelength from GeoTIFF tags/descriptions using rasterio."""
+    try:
+        with rasterio.open(tif_path) as ds:
+            if ds.descriptions and ds.descriptions[0]:
+                nm = _parse_first_float(ds.descriptions[0])
+                if nm and 300 <= nm <= 2500:
+                    return nm
+
+            for tags in (ds.tags(1) or {}, ds.tags() or {}):
+                for k in _WL_KEYS:
+                    if k in tags:
+                        nm = _parse_first_float(tags.get(k))
+                        if nm and 300 <= nm <= 2500:
+                            return nm
+
+            tags_all = ds.tags() or {}
+            for v in tags_all.values():
+                nm = _parse_first_float(v)
+                if nm and 300 <= nm <= 2500:
+                    return nm
+    except Exception:
+        return None
+    return None
+
+
+
+
+def infer_nm_map_from_groups(groups, meta_cache=None, sample_per_band=6):
+    """
+    Infer band_key -> wavelength (nm) and labels without user input.
+
+    Priority per image:
+      1) cached metadata (meta_cache[path]['central_wavelength_nm'|'band_name'|'rig_camera_index'])
+      2) sidecar/.tif metadata miners (existing helpers)
+      3) band_key looks like nm (e.g., '475')
+
+    Returns:
+      nm_map: dict band_key -> float|None
+      label_map: dict band_key -> str
+    """
+    nm_map = {}
+    label_map = {}
+
+    def _meta_for_path(p):
+        if meta_cache and p in meta_cache:
+            return meta_cache.get(p) or {}
+        return {}
+
+    for band_key, paths in groups.items():
+        nms = []
+        names = []
+        rigs = []
+        for p in (paths or [])[: int(sample_per_band)]:
+            m = _meta_for_path(p)
+            nm = m.get('central_wavelength_nm')
+            if nm is None:
+                # fall back to existing miners if present
+                if '_extract_nm_from_sidecar' in globals():
+                    nm = _extract_nm_from_sidecar(p)
+                if nm is None and '_extract_nm_from_tif_metadata' in globals():
+                    nm = _extract_nm_from_tif_metadata(p)
+            if nm is not None:
+                try:
+                    nms.append(float(nm))
+                except Exception:
+                    pass
+
+            bn = m.get('band_name')
+            if bn:
+                names.append(str(bn))
+
+            ri = m.get('rig_camera_index')
+            if ri is not None:
+                try:
+                    rigs.append(int(ri))
+                except Exception:
+                    pass
+
+        nm = None
+        if nms:
+            nms_sorted = sorted(nms)
+            nm = nms_sorted[len(nms_sorted) // 2]  # median
+
+        # fallback: band_key itself might be nm
+        if nm is None:
+            s = str(band_key).strip()
+            if s.isdigit():
+                v = float(s)
+                if v >= 100:
+                    nm = v
+
+        nm_map[band_key] = nm
+
+        # label
+        # prefer explicit band_name from metadata if stable
+        label = None
+        if names:
+            # choose most common name
+            from collections import Counter
+            label = Counter(names).most_common(1)[0][0]
+
+        if label is None:
+            if ' _infer_name_from_nm' in globals():
+                try:
+                    label = _infer_name_from_nm(nm)
+                except Exception:
+                    label = None
+
+        if nm is None:
+            label_map[band_key] = f"Band {band_key}"
+        else:
+            nm_i = int(round(float(nm)))
+            if label:
+                # If label already includes nm, don't duplicate
+                if re.search(r"\b\d{3,4}\b", str(label)):
+                    label_map[band_key] = str(label)
+                else:
+                    label_map[band_key] = f"{label} {nm_i}nm"
+            else:
+                label_map[band_key] = f"{nm_i}nm"
+
+    return nm_map, label_map
+
+
 def _info(msg, title="Info"):
     messagebox.showinfo(title, msg)
 
@@ -103,8 +372,420 @@ def scan_flight_folder(folder):
 
 
 # -------------------------
-# .DAT parser (MicaSense) and EXIF fallback
+# TIFF metadata scanner (vendor-agnostic)
 # -------------------------
+def scan_tiff_metadata(tif_path):
+    """Scan a TIFF/GeoTIFF and return metadata useful for band labeling and
+    radiometric/panel corrections.
+
+    Notes
+    -----
+    - Many multispectral/hyperspectral cameras store band info in XMP or EXIF.
+      GeoTIFF writers may expose some of that via Rasterio's tags/description.
+    - For ENVI-style hyperspectral exports, wavelength lists are commonly stored
+      in a sidecar `.hdr` file.
+
+    Returns
+    -------
+    dict
+        Keys (when available):
+        - camera_model (str|None)
+        - band_name (str|None)
+        - central_wavelength_nm (float|None)
+        - fwhm_nm (float|None)
+        - rig_camera_index (int|None)
+        - wavelength_list_nm (list[float]|None)  # for multi-band hyperspectral
+        - dls (dict)  # downwelling light sensor / panel-related fields
+        - raw_tags (dict)  # merged tags for debugging
+    """
+
+    meta = {
+        "camera_model": None,
+        "band_name": None,
+        "central_wavelength_nm": None,
+        "fwhm_nm": None,
+        "rig_camera_index": None,
+        "wavelength_list_nm": None,
+        "dls": {},
+        "raw_tags": {},
+    }
+
+
+    # ---- sanity checks ----
+    try:
+        meta["raw_tags"]["_path"] = os.path.abspath(tif_path)
+        meta["raw_tags"]["_exists"] = str(os.path.exists(tif_path))
+        if os.path.exists(tif_path):
+            meta["raw_tags"]["_size_bytes"] = str(os.path.getsize(tif_path))
+    except Exception as e:
+        meta["raw_tags"]["_sanity_error"] = repr(e)
+    # ---- helpers ----
+    def _norm(s):
+        return str(s).strip() if s is not None else ""
+
+    def _try_float(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    def _search_float_in_text(text, keys):
+        if not text:
+            return None
+        t = str(text)
+        for k in keys:
+            if k in t:
+                idx = t.find(k)
+                snippet = t[max(0, idx - 80) : idx + 240]
+                v = _parse_first_float(snippet)
+                if v is not None:
+                    return v
+        # fallback: first float
+        v = _parse_first_float(t)
+        return v
+
+    def _ns_to_prefix(ns: str) -> str:
+        """Map known XMP namespaces to stable prefixes (Pix4D-style)."""
+        ns = (ns or "").lower()
+        if "pix4d.com/camera" in ns:
+            return "Camera"
+        if "pix4d.com/dls" in ns:
+            return "DLS"
+        if "micasense" in ns:
+            return "MicaSense"
+        if "dji" in ns:
+            return "DJI"
+        if "parrot" in ns:
+            return "Parrot"
+        return "XMP"
+
+    def _parse_xmp_packet(xmp_text: str) -> dict:
+        """Parse an XMP packet into a flat dict key->text.
+
+        We keep keys as '<Prefix>:<LocalName>' so different vendors can still
+        be mined with heuristics (e.g., 'Camera:CentralWavelength',
+        'DLS:Irradiance', etc.).
+        """
+        if not xmp_text:
+            return {}
+        s = xmp_text
+        start = s.find("<x:xmpmeta")
+        end = s.rfind("</x:xmpmeta>")
+        if start != -1 and end != -1:
+            s = s[start : end + len("</x:xmpmeta>")]
+        try:
+            root = ET.fromstring(s)
+        except Exception:
+            return {}
+
+        out = {}
+        for elem in root.iter():
+            tag = elem.tag
+            if isinstance(tag, str) and tag.startswith("{") and "}" in tag:
+                ns, local = tag[1:].split("}", 1)
+                prefix = _ns_to_prefix(ns)
+                key = f"{prefix}:{local}"
+            else:
+                key = str(tag)
+
+            txt = (elem.text or "").strip()
+            if txt:
+                out[key] = txt
+
+            for ak, av in (elem.attrib or {}).items():
+                if av:
+                    out[str(ak)] = str(av).strip()
+        return out
+
+    # ---- 1) ENVI header sidecar (.hdr) for hyperspectral ----
+    try:
+        base, _ = os.path.splitext(tif_path)
+        hdr_path = base + ".hdr"
+        if os.path.exists(hdr_path):
+            txt = _read_sidecar_text(hdr_path) or ""
+            # wavelength units may be micrometers or nanometers
+            units = None
+            m_units = re.search(r"wavelength\s+units\s*=\s*\{([^}]*)\}", txt, re.I)
+            if m_units:
+                units = m_units.group(1).strip().lower()
+            m = re.search(r"wavelength\s*=\s*\{([^}]*)\}", txt, re.I | re.S)
+            if m:
+                nums = re.findall(r"-?\d+(?:\.\d+)?", m.group(1))
+                w = [float(n) for n in nums]
+                # heuristics: ENVI often uses micrometers (0.485, 0.560...)
+                if units and "micro" in units:
+                    w = [v * 1000.0 for v in w]
+                else:
+                    # if values look like micrometers, convert to nm
+                    if w and max(w) < 20:
+                        w = [v * 1000.0 for v in w]
+                meta["wavelength_list_nm"] = w
+    except Exception as e:
+        meta["raw_tags"]["_hdr_error"] = repr(e)
+        pass
+
+    # ---- 2) Rasterio tags/descriptions ----
+    if rasterio is not None:
+        try:
+            with rasterio.open(tif_path) as ds:
+                # Collect tags (dataset + band 1)
+                tags = {}
+                try:
+                    tags.update(ds.tags() or {})
+                except Exception:
+                    pass
+                try:
+                    tags.update(ds.tags(1) or {})
+                except Exception:
+                    pass
+
+                # Preserve raw tags for debugging
+                meta["raw_tags"].update({str(k): str(v) for k, v in tags.items()})
+
+                # camera model hints
+                for k in ("Model", "model", "CameraModel", "camera_model", "Make", "make"):
+                    if k in tags and tags.get(k):
+                        meta["camera_model"] = _norm(tags.get(k))
+                        break
+
+                # band description/name
+                if ds.descriptions and ds.descriptions[0]:
+                    meta["band_name"] = _norm(ds.descriptions[0])
+
+                # wavelength from common tag keys
+                wl_keys = (
+                    "Xmp.Camera.CentralWavelength",
+                    "CentralWavelength",
+                    "CENTER_WAVELENGTH",
+                    "center_wavelength",
+                    "CENTRAL_WAVELENGTH",
+                    "central_wavelength",
+                    "WAVELENGTH",
+                    "wavelength",
+                )
+                for k in wl_keys:
+                    if k in tags and tags.get(k):
+                        v = _parse_first_float(tags.get(k))
+                        if v is not None:
+                            # some XMP store micrometers
+                            if v < 50:
+                                v = v * 1000.0
+                            meta["central_wavelength_nm"] = v
+                            break
+                if meta["central_wavelength_nm"] is None:
+                    # sometimes wavelength is embedded in description
+                    v = _parse_first_float(meta.get("band_name"))
+                    if v is not None:
+                        if v < 50:
+                            v = v * 1000.0
+                        meta["central_wavelength_nm"] = v
+
+                # BandName tag
+                for k in ("Xmp.Camera.BandName", "BandName", "band_name", "BAND_NAME"):
+                    if k in tags and tags.get(k):
+                        meta["band_name"] = meta["band_name"] or _norm(tags.get(k))
+                        break
+
+                # FWHM/Bandwidth
+                for k in ("FWHM", "fwhm", "WavelengthFWHM", "Xmp.Camera.WavelengthFWHM"):
+                    if k in tags and tags.get(k):
+                        bw = _parse_first_float(tags.get(k))
+                        if bw is not None:
+                            if bw < 50:
+                                bw = bw * 1000.0
+                            meta["fwhm_nm"] = bw
+                            break
+
+                # RigCameraIndex (DJI/Parrot-like)
+                for k in ("RigCameraIndex", "rigcamerindex", "Xmp.Camera.RigCameraIndex"):
+                    if k in tags and tags.get(k):
+                        idx = _parse_first_float(tags.get(k))
+                        if idx is not None:
+                            meta["rig_camera_index"] = int(round(idx))
+                            break
+
+                # DLS / panel correction hints (keep raw numbers)
+                # Examples seen in the wild: Xmp.DLS.*, DLS:*, Irradiance, etc.
+                for k, v in tags.items():
+                    kl = str(k).lower()
+                    if "dls" in kl or "irradi" in kl or "downwelling" in kl:
+                        fv = _parse_first_float(v)
+                        if fv is not None:
+                            meta["dls"][str(k)] = fv
+
+                # If this is a multiband TIFF and we have an ENVI wavelength list,
+                # keep it for later use.
+                if ds.count and ds.count > 1 and meta.get("wavelength_list_nm"):
+                    if len(meta["wavelength_list_nm"]) != ds.count:
+                        # mismatch - keep but mark (caller can decide)
+                        meta["raw_tags"]["_wavelength_list_mismatch"] = f"hdr={len(meta['wavelength_list_nm'])}, tiff={ds.count}"
+
+        except Exception as e:
+            meta["raw_tags"]["_rasterio_error"] = repr(e)
+            pass
+
+    # ---- 2b) TIFF EXIF/GPS/XMP blocks via tifffile (vendor-agnostic) ----
+    # Rasterio/GDAL often do not expose XMP/EXIF fields for non-GeoTIFF imagery.
+    # tifffile lets us mine those reliably.
+    try:
+        with tifffile.TiffFile(tif_path) as tif:
+            page = tif.pages[0]
+            ttags = page.tags
+
+            # Make/Model
+            for k in ("Make", "Model"):
+                if k in ttags and ttags[k].value:
+                    meta["camera_model"] = meta["camera_model"] or _norm(ttags[k].value)
+
+            # EXIF dict
+            if "ExifTag" in ttags and isinstance(ttags["ExifTag"].value, dict):
+                exif = ttags["ExifTag"].value
+                for ek, ev in exif.items():
+                    if ev is None:
+                        continue
+                    key = f"EXIF:{ek}"
+                    if key not in meta["raw_tags"]:
+                        meta["raw_tags"][key] = str(ev)
+
+            # GPS dict
+            if "GPSTag" in ttags and isinstance(ttags["GPSTag"].value, dict):
+                gps = ttags["GPSTag"].value
+                for gk, gv in gps.items():
+                    meta["raw_tags"][f"GPS:{gk}"] = str(gv)
+
+            # XMP packet
+            xmp_text = None
+            if "XMP" in ttags and ttags["XMP"].value:
+                xv = ttags["XMP"].value
+                if isinstance(xv, (bytes, bytearray)):
+                    xmp_text = xv.decode("utf-8", "ignore")
+                else:
+                    xmp_text = str(xv)
+
+            if xmp_text:
+                xmp = _parse_xmp_packet(xmp_text)
+                for k, v in xmp.items():
+                    meta["raw_tags"][f"XMP:{k}"] = v
+
+                # Prefer a more specific rig/camera model when available
+                rig = xmp.get("Camera:RigName") or xmp.get("Xmp.Camera.RigName")
+                if rig:
+                    # If we only got a generic make/model, overwrite it with the rig name
+                    meta["camera_model"] = _norm(rig)
+
+                # Pix4D-style Camera tags
+                if not meta["band_name"]:
+                    bn = xmp.get("Camera:BandName") or xmp.get("Xmp.Camera.BandName")
+                    if bn:
+                        meta["band_name"] = _norm(bn)
+
+                if meta["central_wavelength_nm"] is None:
+                    cw = xmp.get("Camera:CentralWavelength") or xmp.get("Xmp.Camera.CentralWavelength")
+                    v = _parse_first_float(cw)
+                    if v is not None:
+                        meta["central_wavelength_nm"] = v
+
+                if meta["fwhm_nm"] is None:
+                    bw = xmp.get("Camera:WavelengthFWHM") or xmp.get("Xmp.Camera.WavelengthFWHM")
+                    v = _parse_first_float(bw)
+                    if v is not None:
+                        meta["fwhm_nm"] = v
+
+                if meta["rig_camera_index"] is None:
+                    rc = xmp.get("Camera:RigCameraIndex") or xmp.get("Xmp.Camera.RigCameraIndex") or xmp.get("RigCameraIndex")
+                    v = _parse_first_float(rc)
+                    if v is not None:
+                        meta["rig_camera_index"] = int(round(v))
+
+                # DLS / irradiance fields
+                for k, v in xmp.items():
+                    kl = str(k).lower()
+                    if "dls" in kl or "irradi" in kl or "downwelling" in kl:
+                        fv = _parse_first_float(v)
+                        if fv is not None:
+                            meta["dls"][k] = fv
+
+    except Exception as e:
+        meta["raw_tags"]["_tifffile_error"] = repr(e)
+        pass
+
+    # ---- 3) Sidecar metadata (.dat/.xmp/.xml/.json/.txt) ----
+    try:
+        if meta["central_wavelength_nm"] is None:
+            nm = _extract_nm_from_sidecar(tif_path)
+            if nm is not None:
+                meta["central_wavelength_nm"] = float(nm)
+    except Exception:
+        pass
+
+    return meta
+
+
+
+
+def varrer_metadados_tiff(image_paths):
+    """Scan a list of TIFFs and group them into bands.
+
+    Returns:
+      groups: dict[band_key] -> list[path]
+      meta_cache: dict[path] -> meta dict
+
+    Band key strategy (Pix4D-like):
+      1) central_wavelength_nm (best)
+      2) normalized band_name (or nm embedded in name)
+      3) rig_camera_index
+      4) filename fallback
+
+    This makes ordering and labeling stable across cameras.
+    """
+    groups = {}
+    meta_cache = {}
+
+    for p in image_paths:
+        try:
+            meta = scan_tiff_metadata(p)
+        except Exception:
+            meta = {"raw_tags": {"_scan_error": True}}
+
+        meta_cache[p] = meta
+        nm = meta.get('central_wavelength_nm')
+        bn = meta.get('band_name')
+        ri = meta.get('rig_camera_index')
+
+        band_key = None
+
+        if nm is not None:
+            try:
+                band_key = float(nm)
+            except Exception:
+                band_key = None
+
+        if band_key is None and bn:
+            s = str(bn).strip()
+            # if nm embedded in band name, prefer that
+            m = re.search(r"(\d{3,4}(?:\.\d+)?)", s)
+            if m:
+                try:
+                    band_key = float(m.group(1))
+                except Exception:
+                    band_key = None
+            if band_key is None:
+                band_key = s.lower()
+
+        if band_key is None and ri is not None:
+            try:
+                band_key = int(ri)
+            except Exception:
+                band_key = None
+
+        if band_key is None:
+            band_key = Path(p).stem
+
+        groups.setdefault(band_key, []).append(p)
+
+    return groups, meta_cache
+
+
 def _parse_dat_file(path):
     """
     Parse .dat file with key=value or key:value style (MicaSense-like).
@@ -210,15 +891,334 @@ def build_geodata_for_images(image_paths):
         cand_dat = base + ".dat"
         dat = _parse_dat_file(cand_dat) if os.path.exists(cand_dat) else {}
         exif = _get_exif_position(p)
+        # Also scan TIFF metadata for band/wavelength and DLS/panel hints
+        tmeta = {}
+        try:
+            tmeta = scan_tiff_metadata(p) or {}
+        except Exception:
+            tmeta = {}
         geo = {}
         for k in ("latitude", "longitude", "altitude", "yaw", "pitch", "roll"):
             if k in dat and dat[k] is not None:
                 geo[k] = dat[k]
             elif k in exif and exif[k] is not None:
                 geo[k] = exif[k]
+
+        # Store spectral & radiometric hints (non-breaking extras)
+        if tmeta.get("central_wavelength_nm") is not None:
+            geo["band_nm"] = float(tmeta["central_wavelength_nm"])
+        if tmeta.get("band_name"):
+            geo["band_name"] = str(tmeta["band_name"])
+        if tmeta.get("dls"):
+            geo["dls"] = dict(tmeta["dls"])
         out[p] = geo
     return out
 
+    # --------------------------------------------------------------------------
+    # Automatic band metadata inference
+    # --------------------------------------------------------------------------
+    # Helper functions below enable automatic detection of band wavelengths and
+    # human‑readable labels.  They search TIFF metadata, sidecar files and
+    # camera presets so that the user no longer needs to manually enter band
+    # information.  See the accompanying documentation and research for details
+    # about supported cameras and metadata keys.
+
+    # Keys commonly used to store wavelength information in GeoTIFF metadata.  Both
+    # uppercase and lowercase versions are handled when scanning tags.
+    _WL_KEYS = (
+        "WAVELENGTH",
+        "wavelength",
+        "CENTER_WAVELENGTH",
+        "center_wavelength",
+        "CENTRAL_WAVELENGTH",
+        "central_wavelength",
+        "CentralWavelength",
+        "CenterWavelength",
+        "BANDNAME",
+        "BandName",
+        "BAND_NAME",
+        "band_name",
+        "DESCRIPTION",
+        "description",
+    )
+
+    # Approximate spectral names used when labelling bands.  Each entry is a
+    # reference wavelength (nm) and the corresponding label.  During
+    # inference, the nearest reference within a tolerance will be used.
+    _SPECTRAL_NAMES = [
+        (450, "Blue"),
+        (470, "Blue"),
+        (475, "Blue"),
+        (500, "Green"),
+        (540, "Green"),
+        (560, "Green"),
+        (630, "Red"),
+        (650, "Red"),
+        (660, "Red"),
+        (668, "Red"),
+        (705, "RedEdge"),
+        (717, "RedEdge"),
+        (730, "RedEdge"),
+        (735, "RedEdge"),
+        (760, "RedEdge"),
+        (790, "NIR"),
+        (800, "NIR"),
+        (810, "NIR"),
+        (840, "NIR"),
+        (842, "NIR"),
+        (860, "NIR"),
+        (900, "NIR"),
+        (940, "NIR"),
+        (950, "NIR"),
+        (970, "NIR"),
+        (1000, "NIR"),
+        (1100, "SWIR"),
+    ]
+
+    def _parse_first_float(text):
+        """
+        Extract the first floating point number from a string.
+
+        Parameters
+        ----------
+        text : str or any
+            Input text to scan.
+
+        Returns
+        -------
+        float or None
+            The first detected float value, or None if none was found.
+        """
+        if text is None:
+            return None
+        s = str(text)
+        m = re.search(r"(-?\d+(?:\.\d+)?)", s)
+        if not m:
+            return None
+        try:
+            return float(m.group(1))
+        except Exception:
+            return None
+
+    def _infer_name_from_nm(nm, tol=30.0):
+        """
+        Infer a human‑readable spectral band name from a wavelength.
+
+        Parameters
+        ----------
+        nm : float
+            Wavelength in nanometres.
+        tol : float, optional
+            Maximum allowed difference (in nm) to match a reference (default 30).
+
+        Returns
+        -------
+        str or None
+            The inferred spectral name (e.g. 'Red', 'Green'), or None if no
+            reference is within the tolerance.
+        """
+        if nm is None:
+            return None
+        best_name = None
+        best_diff = float("inf")
+        for ref_nm, name in _SPECTRAL_NAMES:
+            diff = abs(float(nm) - float(ref_nm))
+            if diff < best_diff:
+                best_name = name
+                best_diff = diff
+        return best_name if best_diff <= tol else None
+
+    def _extract_nm_from_tif_metadata(tif_path):
+        """
+        Extract a wavelength (nm) from a GeoTIFF's internal metadata.  This
+        function checks band descriptions, per‑band tags and dataset tags for
+        numeric values in the valid range (350–2500 nm).
+
+        Parameters
+        ----------
+        tif_path : str
+            Path to the GeoTIFF file.
+
+        Returns
+        -------
+        float or None
+            Detected wavelength, or None if none could be extracted.
+        """
+        try:
+            with rasterio.open(tif_path) as ds:
+                # 1) Band descriptions
+                try:
+                    if ds.descriptions:
+                        desc = ds.descriptions[0]
+                        nm = _parse_first_float(desc)
+                        if nm and 350 <= nm <= 2500:
+                            return nm
+                except Exception:
+                    pass
+                # 2) Tags (band and dataset)
+                for tags in (ds.tags(1) or {}, ds.tags() or {}):
+                    # Direct lookup by common keys
+                    for k in _WL_KEYS:
+                        if k in tags:
+                            nm_val = _parse_first_float(tags.get(k))
+                            if nm_val and 350 <= nm_val <= 2500:
+                                return nm_val
+                    # Fallback: scan all tag values for a numeric value
+                    for v in tags.values():
+                        nm_val = _parse_first_float(v)
+                        if nm_val and 350 <= nm_val <= 2500:
+                            return nm_val
+        except Exception as e:
+            meta["raw_tags"]["_rasterio_error"] = repr(e)
+            pass
+        return None
+
+    def _extract_nm_from_sidecar(tif_path):
+        """
+        Attempt to read a wavelength (nm) from sidecar files (.xmp, .xml, .json,
+        .txt) associated with a GeoTIFF.  Looks for keywords such as
+        'CentralWavelength', 'CenterWavelength' or 'wavelength' and extracts the
+        first numeric value between 350 and 2500 nm.
+
+        Parameters
+        ----------
+        tif_path : str
+            Path to the GeoTIFF file.
+
+        Returns
+        -------
+        float or None
+            Detected wavelength, or None if none could be extracted.
+        """
+        base, _ = os.path.splitext(tif_path)
+        side_exts = [
+            ".xmp",
+            ".XMP",
+            ".xml",
+            ".XML",
+            ".json",
+            ".JSON",
+            ".txt",
+            ".TXT",
+        ]
+        patterns = [
+            r"CentralWavelength\s*[<:=]?\s*(\d+(?:\.\d+)?)",
+            r"CenterWavelength\s*[<:=]?\s*(\d+(?:\.\d+)?)",
+            r"central_wavelength\s*[<:=]?\s*(\d+(?:\.\d+)?)",
+            r"center_wavelength\s*[<:=]?\s*(\d+(?:\.\d+)?)",
+            r"Wavelength\s*[<:=]?\s*(\d+(?:\.\d+)?)",
+            r"wavelength\s*[<:=]?\s*(\d+(?:\.\d+)?)",
+        ]
+        for ext in side_exts:
+            sc_path = base + ext
+            if not os.path.exists(sc_path):
+                continue
+            try:
+                with open(sc_path, "r", encoding="utf-8", errors="ignore") as f:
+                    txt = f.read()
+            except Exception:
+                continue
+            # Keyword search
+            for pat in patterns:
+                m = re.search(pat, txt, flags=re.IGNORECASE)
+                if m:
+                    try:
+                        nm_val = float(m.group(1))
+                        if 350 <= nm_val <= 2500:
+                            return nm_val
+                    except Exception:
+                        pass
+            # Check for number followed by 'nm'
+            m2 = re.search(r"(\d+(?:\.\d+)?)\s*nm", txt, flags=re.IGNORECASE)
+            if m2:
+                try:
+                    nm_val = float(m2.group(1))
+                    if 350 <= nm_val <= 2500:
+                        return nm_val
+                except Exception:
+                    pass
+            # Fallback: any numeric value
+            m3 = re.search(r"(\d+(?:\.\d+)?)", txt)
+            if m3:
+                try:
+                    nm_val = float(m3.group(1))
+                    if 350 <= nm_val <= 2500:
+                        return nm_val
+                except Exception:
+                    pass
+        return None
+
+    def _extract_camera_model(tif_path):
+        """
+        Detect the camera model from TIFF and sidecar metadata.  Aids in
+        selecting a preset mapping when explicit wavelength information is
+        missing.
+
+        Parameters
+        ----------
+        tif_path : str
+            Path to a sample GeoTIFF file.
+
+        Returns
+        -------
+        str or None
+            A string identifying a known camera model, or None if detection
+            fails.
+        """
+        candidates = []
+        # Scan TIFF dataset tags for camera/model information
+        try:
+            with rasterio.open(tif_path) as ds:
+                tags = ds.tags() or {}
+                for k, v in tags.items():
+                    key = k.lower()
+                    if key in (
+                        "model",
+                        "make",
+                        "cameramodelname",
+                        "unique_cameramodel",
+                        "rigname",
+                        "camera",
+                        "camera_model",
+                        "camera-model",
+                        "model_name",
+                    ):
+                        if v:
+                            candidates.append(str(v))
+        except Exception as e:
+            meta["raw_tags"]["_rasterio_error"] = repr(e)
+            pass
+        # Read sidecar snippets for camera hints
+        base, _ = os.path.splitext(tif_path)
+        for ext in (".xmp", ".XMP", ".xml", ".XML", ".json", ".JSON", ".txt", ".TXT"):
+            sc_path = base + ext
+            if not os.path.exists(sc_path):
+                continue
+            try:
+                with open(sc_path, "r", encoding="utf-8", errors="ignore") as f:
+                    txt = f.read(50000)
+                candidates.append(txt[:5000])
+            except Exception:
+                continue
+        text = "|".join(candidates).lower()
+        if not text:
+            return None
+        if "mavic" in text and "3" in text:
+            return "DJI Mavic 3 Multispectral"
+        if ("p4" in text or "phantom" in text) and ("multi" in text or "spectral" in text):
+            return "DJI P4 Multispectral"
+        if "sequoia" in text:
+            return "Parrot Sequoia"
+        if "sentera" in text and "6" in text:
+            return "Sentera 6X"
+        if "altum" in text:
+            return "MicaSense Altum"
+        if "rededge" in text or "red edge" in text:
+            # Differentiate RedEdge‑P vs RedEdge‑M when possible
+            if "p" in text:
+                return "MicaSense RedEdge-P"
+            return "MicaSense RedEdge-M"
+        return None
 
 # -------------------------
 # ODM (Docker) — canonical command
@@ -306,6 +1306,7 @@ def _write_geo_txt(project_dir, image_paths, geodata, projection="EPSG:4326"):
 # Band -> wavelength mapping (UI with presets)
 # -------------------------
 _PRESETS = {
+    # MicaSense sensors
     "MicaSense RedEdge-M": {"1": 475, "2": 560, "3": 668, "4": 717, "5": 840},
     "MicaSense RedEdge-P": {"1": 475, "2": 560, "3": 668, "4": 717, "5": 842},
     "MicaSense Altum": {
@@ -316,6 +1317,18 @@ _PRESETS = {
         "5": 842,
         "6": 1100,
     },
+    # DJI multispectral sensors
+    # Phantom 4 Multispectral: Blue~450 nm, Green~560 nm, Red~650 nm,
+    # RedEdge~730 nm, NIR~840 nm【660939532244122†L191-L204】.
+    "DJI P4 Multispectral": {"1": 450, "2": 560, "3": 650, "4": 730, "5": 840},
+    # Mavic 3 multispectral bands: Green 560 nm, Red 650 nm, RedEdge 730 nm,
+    # NIR 860 nm【468661628561316†L66-L76】.
+    "DJI Mavic 3 Multispectral": {"1": 560, "2": 650, "3": 730, "4": 860},
+    # Sentera sensors (6X) central wavelengths【543803204923396†L205-L210】.
+    "Sentera 6X": {"1": 475, "2": 550, "3": 670, "4": 715, "5": 840},
+    # Parrot Sequoia multispectral bands: Green 550 nm, Red 660 nm,
+    # RedEdge 735 nm, NIR 790 nm【120072669245677†L2007-L2013】.
+    "Parrot Sequoia": {"1": 550, "2": 660, "3": 735, "4": 790},
 }
 
 
@@ -544,7 +1557,23 @@ def stack_orthos_same_grid(ortho_paths):
     crs : rasterio.crs.CRS or None
         CRS of the resulting stack.
     """
-    keys = sorted(ortho_paths.keys(), key=lambda x: (len(x), x))
+    # Robust key ordering: if keys are numeric wavelengths, sort numerically; else fallback to string ordering
+    def _sort_key(_k):
+        try:
+            # numeric wavelength keys (int/float) or numeric strings
+            if isinstance(_k, (int, float)):
+                return (0, float(_k))
+            if isinstance(_k, str):
+                s = _k.strip()
+                try:
+                    return (0, float(s))
+                except Exception:
+                    return (1, len(s), s)
+            s = str(_k)
+            return (1, len(s), s)
+        except Exception:
+            return (2, 0, '')
+    keys = sorted(ortho_paths.keys(), key=_sort_key)
     first = ortho_paths[keys[0]]
     with rasterio.open(first) as temp:
         transform, crs = temp.transform, temp.crs
@@ -646,11 +1675,17 @@ def salvar_produtos(path_base, cube, wavelengths, transform, crs, dtype="float32
         for i in range(b):
             dst.write(cube[:, :, i].astype(dtype), i + 1)
             nm = wavelengths[i]
-            desc = (
-                f"Band {i + 1}"
-                if nm is None
-                else f"Band {i + 1} - {int(round(float(nm)))} nm"
-            )
+            # Build a more descriptive label when possible.  Use the spectral
+            # name (e.g. Red, NIR) if `_infer_name_from_nm` recognises the
+            # wavelength; otherwise fall back to a generic 'Band i - NNN nm'.
+            if nm is None:
+                desc = f"Band {i + 1}"
+            else:
+                name = _infer_name_from_nm(nm)
+                if name:
+                    desc = f"{name} - {int(round(float(nm)))} nm"
+                else:
+                    desc = f"Band {i + 1} - {int(round(float(nm)))} nm"
             descs.append(desc)
             # band description and tags
             try:
@@ -676,7 +1711,8 @@ def salvar_produtos(path_base, cube, wavelengths, transform, crs, dtype="float32
                 BAND_COUNT=str(b),
                 BAND_DESCRIPTIONS="|".join(descs),
             )
-        except Exception:
+        except Exception as e:
+            meta["raw_tags"]["_rasterio_error"] = repr(e)
             pass
 
     np.save(f"{path_base}.npy", cube.astype(np.float32))
@@ -724,12 +1760,18 @@ def salvar_bandas_individuais(path_base, cube, wavelengths, transform, crs, dtyp
         nm_suf = f"_{int(round(float(nm)))}nm" if nm is not None else ""
         out_path = f"{path_base}_band{i}{nm_suf}.tif"
         with rasterio.open(out_path, "w", **profile) as dst:
+            # Write the single band data
             dst.write(cube[:, :, i - 1].astype(dtype), 1)
-            desc = (
-                f"Band {i}"
-                if nm is None
-                else f"Band {i} - {int(round(float(nm)))} nm"
-            )
+            # Use spectral name when possible for single‑band output
+            if nm is None:
+                desc = f"Band {i}"
+            else:
+                name = _infer_name_from_nm(nm)
+                if name:
+                    desc = f"{name} - {int(round(float(nm)))} nm"
+                else:
+                    desc = f"Band {i} - {int(round(float(nm)))} nm"
+            # Set band description and metadata
             try:
                 dst.set_band_description(1, desc)
             except Exception:
@@ -1074,9 +2116,29 @@ def geoimport_wizard_gui():
         "Your original image folder WILL NOT be modified."
     )
 
-    groups = scan_flight_folder(images_folder)
-    if not groups:
+    # ------------------------------------------------------------------
+    # STEP 2b) Varre metadados (TIFF) e agrupa bandas automaticamente.
+    # Isso melhora MUITO o reconhecimento de bandas em cameras que nao
+    # seguem padrao de nome de arquivo.
+    # ------------------------------------------------------------------
+    all_tifs = []
+    for root, _, files in os.walk(images_folder):
+        for fn in files:
+            if _TIF_RE.match(fn):
+                all_tifs.append(os.path.join(root, fn))
+    all_tifs = sorted(all_tifs)
+
+    if not all_tifs:
         _warn("No .tif/.tiff files were found in the selected folder.")
+        return
+
+    _info(
+        "STEP 2/3 — Reading TIFF metadata (band name, wavelength, DLS/panel hints)\n"
+        "and grouping images per band automatically."
+    )
+    groups, meta_cache = varrer_metadados_tiff(all_tifs)
+    if not groups:
+        _warn("Could not group TIFFs by band (no usable metadata / filenames).")
         return
 
     _info(
@@ -1096,10 +2158,19 @@ def geoimport_wizard_gui():
         return
 
     # 5) Band -> wavelength mapping
-    nm_map = map_bands_to_nm_ui(list(ortho_paths.keys()))
-    if not nm_map:
-        _warn("Wavelength mapping was cancelled.")
-        return
+    # Infer wavelengths automatically from metadata/sidecars (no UI)
+    nm_map, label_map = infer_nm_map_from_groups(groups, meta_cache=meta_cache)
+    # Inform the user what was detected
+    try:
+        ordered_keys = sorted(nm_map.keys(), key=lambda x: (len(x), x))
+        msg = "\n".join([
+            f"{k} -> {label_map.get(k, 'Unknown')}" for k in ordered_keys
+        ])
+        _info(
+            "Band metadata detected automatically:\n\n" + msg
+        )
+    except Exception:
+        pass
 
     _info(
         "Stacking orthomosaics on a common grid.\n"
@@ -1107,12 +2178,25 @@ def geoimport_wizard_gui():
     )
     cube, transform, crs = stack_orthos_same_grid(ortho_paths)
 
-    ordered_keys = sorted(ortho_paths.keys(), key=lambda x: (len(x), x))
-    try:
-        wavelengths = [nm_map[k] for k in ordered_keys]
-    except KeyError as e:
-        _error(f"No wavelength was defined for band key: {e}")
-        return
+    # Use the same ordered_keys for stacking results (sort by length then string)
+    # Robust key ordering for numeric wavelengths (float/int) and strings
+    def _sort_key_odm(_k):
+        try:
+            if isinstance(_k, (int, float)):
+                return (0, float(_k))
+            if isinstance(_k, str):
+                s = _k.strip()
+                try:
+                    return (0, float(s))
+                except Exception:
+                    return (1, len(s), s)
+            s = str(_k)
+            return (1, len(s), s)
+        except Exception:
+            return (2, 0, '')
+    ordered_keys = sorted(ortho_paths.keys(), key=_sort_key_odm)
+    # Retrieve wavelengths in the same order as bands; missing values become None
+    wavelengths = [nm_map.get(k) for k in ordered_keys]
 
     # 6.5) OPTIONAL — Panel-based radiometric correction (visible ROI) BEFORE saving
     if messagebox.askyesno(

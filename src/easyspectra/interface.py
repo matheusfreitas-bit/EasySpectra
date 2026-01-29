@@ -23,6 +23,7 @@ from .funcoes_importacao import (
 )
 
 from .preprocessamento import criar_aba_preprocessamento
+from .radiometric_tab import criar_aba_radiometric  # NEW TAB
 from .analise_espectral import criar_aba_analise_espectral
 from .geo_import import geoimport_wizard_gui
 from .indices_vegetacao import criar_aba_indices_vegetacao  # NEW TAB
@@ -255,14 +256,21 @@ def main():
     criar_aba_preprocessamento(aba_preprocessamento)
 
     # -------------------------------
-    # TAB 4 - SPECTRAL ANALYSIS
+    # TAB 4 - RADIOMETRIC (NEW)
+    # -------------------------------
+    aba_radiometric = ttk.Frame(abas)
+    abas.add(aba_radiometric, text="Radiometric")
+    criar_aba_radiometric(aba_radiometric)
+
+    # -------------------------------
+    # TAB 5 - SPECTRAL ANALYSIS
     # -------------------------------
     aba_analise = ttk.Frame(abas)
     abas.add(aba_analise, text="Spectral Analysis")
     criar_aba_analise_espectral(aba_analise)
 
     # -------------------------------
-    # TAB 5 - VEGETATION INDICES
+    # TAB 6 - VEGETATION INDICES
     # -------------------------------
     aba_indices = ttk.Frame(abas)
     abas.add(aba_indices, text="Vegetation indices")
@@ -274,6 +282,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
