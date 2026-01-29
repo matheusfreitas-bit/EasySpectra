@@ -10,3 +10,5 @@ scikit-learn
 tifffile
 torch
 PySide6
+tqdm
+numba
